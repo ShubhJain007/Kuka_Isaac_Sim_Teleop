@@ -42,6 +42,16 @@ docker/.container.cfg
 **/.neptune/*
 docker/artifacts/
 *.tmp
+teleop*.txt
+*.urdf.bak
+history.md
+assets_list.txt
+hospital_*.txt
+props_*.txt
+mounts_list.txt
+environments_list.txt
+full_scan_results.txt
+*.pyc
 
 # Doc Outputs
 **/docs/_build/*

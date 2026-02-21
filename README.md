@@ -1,135 +1,62 @@
-# Template for Isaac Lab Projects
+# Kuka Med 7: VR Teleoperation in Isaac Lab
 
-## Overview
+[![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![Isaac Lab](https://img.shields.io/badge/Isaac_Lab-5.1.0-orange.svg)](https://isaac-sim.github.io/IsaacLab/)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-This project/repository serves as a template for building projects or extensions based on Isaac Lab.
-It allows you to develop in an isolated environment, outside of the core Isaac Lab repository.
+An advanced robotics teleoperation framework for the **Kuka Med 7 LBR**, implemented within the NVIDIA Isaac Lab simulation environment. This project features immersive **Apple Vision Pro** integration via CloudXR and low-latency web streaming.
 
-**Key Features:**
+## 🌟 Key Features
 
-- `Isolation` Work outside the core Isaac Lab repository, ensuring that your development efforts remain self-contained.
-- `Flexibility` This template is set up to allow your code to be run as an extension in Omniverse.
+- **🏥 Realistic Clinical Environment**: A fully rendered medical suite featuring a hospital bed, surgical mount, and accurate medical lighting (6500K).
+- **🦾 Kuka Med 7 LBR**: High-fidelity articulation robot model with tuned PD control and stable transition between joint and Cartesian space.
+- **🕶️ VR Teleoperation**: Real-time hand tracking control using Apple Vision Pro and OpenXR, with custom coordinate transformations for intuitive "Human-in-the-loop" interaction.
+- **🌐 Web Streaming (M-JPEG)**: A lightweight Flask-based streaming server providing multiple camera views (Wrist & Room) viewable directly in VR browsers (Safari) or external workstations.
+- **🟢 Visualization Proxy**: A virtual hand proxy for visual feedback, ensuring precise alignment between the user's physical movements and robot targets.
 
-**Keywords:** extension, template, isaaclab
+## 🚀 Getting Started
 
-## Installation
+### 1. Prerequisites
+Ensure you have **Isaac Sim 4.5+** and **Isaac Lab** installed. Follow the [Isaac Lab Installation Guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
 
-- Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
-  We recommend using the conda or uv installation as it simplifies calling Python scripts from the terminal.
-
-- Clone or copy this project/repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
-
-- Using a python interpreter that has Isaac Lab installed, install the library in editable mode using:
-
-    ```bash
-    # use 'PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-    python -m pip install -e source/Kuka_Med_7
-
-- Verify that the extension is correctly installed by:
-
-    - Listing the available tasks:
-
-        Note: It the task name changes, it may be necessary to update the search pattern `"Template-"`
-        (in the `scripts/list_envs.py` file) so that it can be listed.
-
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/list_envs.py
-        ```
-
-    - Running a task:
-
-        ```bash
-        # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-        python scripts/<RL_LIBRARY>/train.py --task=<TASK_NAME>
-        ```
-
-    - Running a task with dummy agents:
-
-        These include dummy agents that output zero or random agents. They are useful to ensure that the environments are configured correctly.
-
-        - Zero-action agent
-
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/zero_agent.py --task=<TASK_NAME>
-            ```
-        - Random-action agent
-
-            ```bash
-            # use 'FULL_PATH_TO_isaaclab.sh|bat -p' instead of 'python' if Isaac Lab is not installed in Python venv or conda
-            python scripts/random_agent.py --task=<TASK_NAME>
-            ```
-
-### Set up IDE (Optional)
-
-To setup the IDE, please follow these instructions:
-
-- Run VSCode Tasks, by pressing `Ctrl+Shift+P`, selecting `Tasks: Run Task` and running the `setup_python_env` in the drop down menu.
-  When running this task, you will be prompted to add the absolute path to your Isaac Sim installation.
-
-If everything executes correctly, it should create a file .python.env in the `.vscode` directory.
-The file contains the python paths to all the extensions provided by Isaac Sim and Omniverse.
-This helps in indexing all the python modules for intelligent suggestions while writing code.
-
-### Setup as Omniverse Extension (Optional)
-
-We provide an example UI extension that will load upon enabling your extension defined in `source/Kuka_Med_7/Kuka_Med_7/ui_extension_example.py`.
-
-To enable your extension, follow these steps:
-
-1. **Add the search path of this project/repository** to the extension manager:
-    - Navigate to the extension manager using `Window` -> `Extensions`.
-    - Click on the **Hamburger Icon**, then go to `Settings`.
-    - In the `Extension Search Paths`, enter the absolute path to the `source` directory of this project/repository.
-    - If not already present, in the `Extension Search Paths`, enter the path that leads to Isaac Lab's extension directory directory (`IsaacLab/source`)
-    - Click on the **Hamburger Icon**, then click `Refresh`.
-
-2. **Search and enable your extension**:
-    - Find your extension under the `Third Party` category.
-    - Toggle it to enable your extension.
-
-## Code formatting
-
-We have a pre-commit template to automatically format your code.
-To install pre-commit:
-
+### 2. Installation
+Clone the repository and install the project in editable mode:
 ```bash
-pip install pre-commit
+# From the project root
+python -m pip install -e source/Kuka_Med_7
 ```
 
-Then you can run pre-commit with:
+### 3. Usage
 
+#### ⌨️ Keyboard Teleoperation
+Run basic Cartesian control using your keyboard:
 ```bash
-pre-commit run --all-files
+python scripts/teleop_med7.py
 ```
 
-## Troubleshooting
+#### 🥽 VR Teleoperation (Apple Vision Pro)
+1. **Setup CloudXR**: Set the environment variable to enable the external renderer:
+   ```bash
+   export EXTERNAL_RENDERER=cloudxr
+   ```
+2. **Launch with Experience File**:
+   ```bash
+   python scripts/teleop_med7_vr.py --experience apps/isaaclab.python.headless.cloudxr.kit
+   ```
+3. **Connect Vision Pro**: Open the CloudXR client on your headset and point to your workstation IP.
+4. **View Streams**: Open the Vision Pro Safari browser and navigate to `http://<YOUR_IP>:5000` to see the wrist and room cameras.
 
-### Pylance Missing Indexing of Extensions
+## 🛠️ Project Structure
 
-In some VsCode versions, the indexing of part of the extensions is missing.
-In this case, add the path to your extension in `.vscode/settings.json` under the key `"python.analysis.extraPaths"`.
+- `source/Kuka_Med_7`: Core environment and task definitions.
+  - `tasks/med7/med7_env_cfg.py`: Scene and agent configuration.
+  - `tasks/med7/med7_env.py`: Environment logic and physics interaction.
+- `scripts/`: Executable scripts for teleoperation and testing.
+  - `teleop_med7_vr.py`: The main VR entry point with Flask streaming integration.
+- `assets/`: URDFs and meshes for the Kuka Med 7.
 
-```json
-{
-    "python.analysis.extraPaths": [
-        "<path-to-ext-repo>/source/Kuka_Med_7"
-    ]
-}
-```
+## 📖 Documentation
+Detailed technical documentation on the control loops, coordinate transforms, and streaming architecture can be found in [documentation.md](documentation.md).
 
-### Pylance Crash
-
-If you encounter a crash in `pylance`, it is probable that too many files are indexed and you run out of memory.
-A possible solution is to exclude some of omniverse packages that are not used in your project.
-To do so, modify `.vscode/settings.json` and comment out packages under the key `"python.analysis.extraPaths"`
-Some examples of packages that can likely be excluded are:
-
-```json
-"<path-to-isaac-sim>/extscache/omni.anim.*"         // Animation packages
-"<path-to-isaac-sim>/extscache/omni.kit.*"          // Kit UI tools
-"<path-to-isaac-sim>/extscache/omni.graph.*"        // Graph UI tools
-"<path-to-isaac-sim>/extscache/omni.services.*"     // Services tools
-...
-```
+## 📄 License
+This project is licensed under the BSD 3-Clause License - see the LICENSE file for details.

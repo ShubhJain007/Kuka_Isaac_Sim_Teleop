@@ -7,8 +7,36 @@
 Script to run keyboard teleoperation for the Kuka Med 7 robot.
 """
 
-import argparse
+import sys
+import os
 
+def setup_ros2_libs():
+    """Finds and sets the LD_LIBRARY_PATH for the bundled ROS 2 bridge to avoid ImportErrors."""
+    try:
+        import isaacsim
+        isaacsim_path = os.path.dirname(isaacsim.__file__)
+        ros2_bridge_root = os.path.join(isaacsim_path, "exts/isaacsim.ros2.bridge/humble")
+        lib_path = os.path.join(ros2_bridge_root, "lib")
+        python_path = os.path.join(ros2_bridge_root, "rclpy")
+
+        # If the lib path is not in LD_LIBRARY_PATH, we must re-execute the script
+        current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+        if lib_path not in current_ld_path:
+            # print(f"[INFO] Automatically setting LD_LIBRARY_PATH to include bundled ROS 2 libraries...")
+            os.environ["LD_LIBRARY_PATH"] = f"{lib_path}:{current_ld_path}"
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        
+        # Add the Python path to sys.path
+        if python_path not in sys.path:
+            sys.path.append(python_path)
+        return True
+    except ImportError:
+        return False
+
+# Self-fix: Ensure the environment is set correctly before proceeding
+setup_ros2_libs()
+
+import argparse
 from isaaclab.app import AppLauncher
 
 # add argparse arguments
@@ -28,6 +56,8 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym
 import torch
+import rclpy
+from rclpy.node import Node
 
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
@@ -37,8 +67,40 @@ import Kuka_Med_7  # noqa: F401
 from Kuka_Med_7.tasks.med7.med7_env_cfg import Med7EnvCfg
 
 
+class BoneTrackerNode(Node):
+    """ROS 2 node to subscribe to bone pose tracking data."""
+    def __init__(self):
+        super().__init__("bone_tracker_node")
+        # Import PoseStamped here to ensure it's loaded from the bridge path
+        from geometry_msgs.msg import PoseStamped
+        self.subscription = self.create_subscription(
+            PoseStamped,
+            "/bone_pose",
+            self.listener_callback,
+            10
+        )
+        self.latest_pos = None
+        self.latest_quat = None
+
+    def listener_callback(self, msg):
+        """Callback to store the latest received pose."""
+        # ROS Pose uses (x, y, z, w), Isaac Lab uses (w, x, y, z)
+        self.latest_pos = torch.tensor(
+            [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z], 
+            device="cuda:0", dtype=torch.float32
+        ).unsqueeze(0)
+        self.latest_quat = torch.tensor(
+            [msg.pose.orientation.w, msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z], 
+            device="cuda:0", dtype=torch.float32
+        ).unsqueeze(0)
+
+
 def main():
     """Main function."""
+    # Initialize ROS 2
+    rclpy.init()
+    ros_node = BoneTrackerNode()
+
     # create environment configuration
     env_cfg = Med7EnvCfg()
     env_cfg.scene.num_envs = args_cli.num_envs
@@ -74,11 +136,19 @@ def main():
     
     print("[INFO]: Setup complete. Use W/S, A/D, Q/E to move EE, and Z/X, T/G, C/V to rotate.")
     print("[INFO]: Press 'L' to reset the environment.")
+    print("[INFO]: Listening for bone pose on /bone_pose (geometry_msgs/PoseStamped)")
 
     # simulate physics
     while simulation_app.is_running():
+        # Spin ROS to process callbacks
+        rclpy.spin_once(ros_node, timeout_sec=0.0)
+
         # run everything in inference mode
         with torch.inference_mode():
+            # Update femur pose if new data arrived
+            if ros_node.latest_pos is not None:
+                env.update_femur_pose(ros_node.latest_pos, ros_node.latest_quat)
+
             # get device command
             delta_pose = teleop_interface.advance()
             # The keyboard device returns [x, y, z, rx, ry, rz, gripper]
@@ -106,6 +176,8 @@ def main():
             
     # close the environment
     env.close()
+    ros_node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == "__main__":

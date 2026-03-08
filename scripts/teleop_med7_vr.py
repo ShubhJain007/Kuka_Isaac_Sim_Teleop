@@ -135,8 +135,19 @@ def main():
     teleop_interface.reset()
 
     # Robot entity for EE pose
-    robot_entity_cfg = SceneEntityCfg("robot", joint_names=None, body_names=["lbr_link_7"])
+    robot_entity_cfg = SceneEntityCfg("robot", joint_names=["lbr_A.*"], body_names=["lbr_link_7"])
     robot_entity_cfg.resolve(env.scene)
+
+    # obtain the frame index of the end-effector
+    if env.robot.is_fixed_base:
+        ee_jacobi_idx = robot_entity_cfg.body_ids[0] - 1
+    else:
+        ee_jacobi_idx = robot_entity_cfg.body_ids[0]
+
+    # create controller
+    from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
+    diff_ik_cfg = DifferentialIKControllerCfg(command_type="pose", use_relative_mode=True, ik_method="dls")
+    diff_ik_controller = DifferentialIKController(diff_ik_cfg, num_envs=env.num_envs, device=env.device)
 
     print("-" * 80)
     print("[IMPORTANT] VR Teleoperation Launch Instructions:")
@@ -254,14 +265,38 @@ def main():
             # 3. Handle Simulation Step / Render
             if teleoperation_active:
                 with torch.inference_mode():
-                    # Compute error (Pose control)
-                    pos_error, rot_error_quat = math_utils.compute_pose_error(ee_pos_w, ee_rot_w, target_pos_w, target_rot_w, rot_error_type="quat")
+                    # obtain quantities from simulation
+                    jacobian = env.robot.root_physx_view.get_jacobians()[:, ee_jacobi_idx, :, robot_entity_cfg.joint_ids]
+                    ee_pose_w = env.robot.data.body_pose_w[:, robot_entity_cfg.body_ids[0]]
+                    root_pose_w = env.robot.data.root_pose_w
+                    joint_pos = env.robot.data.joint_pos[:, robot_entity_cfg.joint_ids]
+
+                    # compute frame in root frame
+                    ee_pos_b, ee_quat_b = math_utils.subtract_frame_transforms(
+                        root_pose_w[:, 0:3], root_pose_w[:, 3:7], ee_pose_w[:, 0:3], ee_pose_w[:, 3:7]
+                    )
                     
-                    # Action for Med7 controller (expects position + axis-angle rotation)
-                    actions = torch.cat([pos_error, math_utils.axis_angle_from_quat(rot_error_quat)], dim=1)
+                    # Compute target in root frame
+                    target_pos_b, target_quat_b = math_utils.subtract_frame_transforms(
+                        root_pose_w[:, 0:3], root_pose_w[:, 3:7], target_pos_w, target_rot_w
+                    )
+
+                    # Compute IK command (relative pose command)
+                    # The controller expects [dx, dy, dz, drx, dry, drz]
+                    # We compute the error between target and current EE in the root frame
+                    pos_error_b, rot_error_quat_b = math_utils.compute_pose_error(
+                        ee_pos_b, ee_quat_b, target_pos_b, target_quat_b, rot_error_type="quat"
+                    )
+                    ik_command = torch.cat([pos_error_b, math_utils.axis_angle_from_quat(rot_error_quat_b)], dim=1)
+
+                    # set command to controller
+                    diff_ik_controller.set_command(ik_command, ee_pos_b, ee_quat_b)
+                    
+                    # compute the joint commands
+                    joint_pos_des = diff_ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
                     
                     # Step environment (performs physics and rendering)
-                    obs, rew, terminated, truncated, info = env.step(actions)
+                    obs, rew, terminated, truncated, info = env.step(joint_pos_des)
             else:
                 # Pulse the simulation app to satisfy XR frame submission and update graphics
                 simulation_app.update()

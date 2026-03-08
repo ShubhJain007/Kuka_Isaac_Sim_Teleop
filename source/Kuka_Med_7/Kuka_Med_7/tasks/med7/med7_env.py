@@ -51,7 +51,7 @@ class Med7Env(DirectRLEnv):
         # Hand Visualization Proxy (RigidObject handles its own spawning)
         from isaaclab.assets import RigidObject
         self.hand_proxy = RigidObject(self.cfg.hand_proxy)
-
+        self.femur = RigidObject(self.cfg.femur)
         # Cameras
         from isaaclab.sensors import Camera
         self.wrist_camera = Camera(self.cfg.wrist_camera)
@@ -61,7 +61,7 @@ class Med7Env(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         self.scene.articulations["robot"] = self.robot
         self.scene.rigid_objects["hand_proxy"] = self.hand_proxy
-
+        self.scene.rigid_objects["femur"] = self.femur
         # Add cameras to scene
         self.scene.sensors["wrist_camera"] = self.wrist_camera
         self.scene.sensors["room_camera"] = self.room_camera
@@ -104,3 +104,18 @@ class Med7Env(DirectRLEnv):
         joint_pos = self.robot.data.default_joint_pos[env_ids]
         joint_vel = self.robot.data.default_joint_vel[env_ids]
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+
+        # Reset femur to initial pose
+        # self.femur.write_root_pose_to_sim(self.femur.data.default_root_state[env_ids, :7], env_ids=env_ids)
+
+    def update_femur_pose(self, pos: torch.Tensor, quat: torch.Tensor):
+        """Update the femur pose in the simulation.
+
+        Args:
+            pos: The position of the femur in the world frame. Shape is (num_envs, 3).
+            quat: The orientation of the femur in the world frame. Shape is (num_envs, 4).
+        """
+        # Create the root state tensor [pos, quat]
+        root_state = torch.cat([pos, quat], dim=-1)
+        # Write the root pose to the simulation
+        self.femur.write_root_pose_to_sim(root_state)

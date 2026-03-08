@@ -1,0 +1,30 @@
+[package]
+title = "Isaac Lab Python CloudXR"
+description = "Custom experience for CloudXR teleoperation with Kuka Med 7"
+version = "1.0.0"
+
+[dependencies]
+"isaaclab.python.xr.openxr" = {}
+
+[settings]
+# Corrected asset root for Isaac Sim 4.5 compatibility
+persistent.isaac.asset_root.default = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5"
+persistent.isaac.asset_root.cloud = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5"
+persistent.isaac.asset_root.nvidia = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5"
+
+# XR Enablement
+app.xr.enabled = true
+xr.profile.ar.enabled = true
+xr.skipInputDeviceUSDWrites = true
+xr.openxr.components."omni.kit.xr.openxr.ext.hand_tracking".enabled = true
+xr.openxr.components."isaacsim.xr.openxr.hand_tracking".enabled = true
+
+# Rendering optimizations for CloudXR
+'rtx-transient'.resourcemanager.enableTextureStreaming = false
+omni.replicator.asyncRendering = false
+app.asyncRendering = true
+app.asyncRenderingLowLatency = true
+
+[settings.app.python]
+interceptSysStdOutput = false
+logSysStdOutput = false

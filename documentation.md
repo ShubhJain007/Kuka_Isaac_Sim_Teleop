@@ -117,17 +117,35 @@ sequenceDiagram
 If the VR teleoperation or hand tracking is not working as expected, follow this checklist:
 
 ### 1. Launch Requirements
-Ensure you are running the script with the CloudXR experience file and environment variables:
-```bash
-# Set the project and renderer
-export EXTERNAL_RENDERER=cloudxr
+Ensure you are running the script with the CloudXR experience file and correct environment variables.
 
-# Run the VR teleop script
+#### 1.1 Start CloudXR Runtime (Docker)
+The CloudXR Monado service must be running in a background container to handle the IPC socket connection:
+```bash
+docker run -it --rm --name cloudxr-runtime \
+    --user $(id -u):$(id -g) --gpus=all -e "ACCEPT_EULA=Y" \
+    --mount type=bind,src=$(pwd)/openxr,dst=/openxr \
+    -p 48010:48010 -p 47998-48000:47998-48000/udp \
+    -p 48005:48005/udp -p 48008:48008/udp -p 48012:48012/udp \
+    nvcr.io/nvidia/cloudxr-runtime:5.0.1
+```
+
+#### 1.2 Setup Environment Variables
+In the terminal where you launch Isaac Lab:
+```bash
+export EXTERNAL_RENDERER=cloudxr
+export XDG_RUNTIME_DIR=$(pwd)/openxr/run
+export XR_RUNTIME_JSON=$(pwd)/openxr/share/openxr/1/openxr_cloudxr.json
+```
+
+#### 1.3 Launch Script
+```bash
 python scripts/teleop_med7_vr.py --num_envs 1 --teleop_device handtracking --experience apps/isaaclab.python.headless.cloudxr.kit
 ```
 
-### 2. Apple Vision Pro Client
-- **IP Address**: Ensure the IP address entered in the Vision Pro app matches your workstation's IP on the **same Wi-Fi network**.
+### 2. Common Errors
+- **FileNotFoundError (Asset Loading)**: If you see a 404/FileNotFound for `Isaac/Environments/Grid/default_environment.usd`, ensure your `apps/*.kit` file has the correct `persistent.isaac.asset_root.default` version (e.g., `4.5` for Isaac Sim 4.5).
+- **Connection Refused (IPC)**: This means the Docker container in Step 1.1 is not running or the `XDG_RUNTIME_DIR` is not correctly exported.
 - **Hand Tracking Settings**: Verify that "Hand Tracking" is enabled in the CloudXR Client settings on your Vision Pro.
 - **Xcode Checklist**:
     - Ensure your Xcode project has the **Hand Tracking** capability enabled in "Signing & Capabilities".
@@ -142,10 +160,84 @@ I have added a **Hand Visualization Proxy** (a green semi-transparent sphere) to
 
 ---
 
+## Phase 6: Asset Conversion & Medical Models
+
+To integrate custom medical data (e.g., STL files of bones), we use the Isaac Lab Mesh Converter utilities. This process is more than just a format change; it optimizes the model for simulation.
+
+### 6.1 `scripts/convert_stl_usd.py`
+- **Description**: Converts raw mesh files (STL/OBJ) into native USD objects.
+- **Key Technical Requirements**:
+    - **AppLauncher & SimulationApp**: The conversion requires the Omniverse engine to be running. This loads the Carbonite (`carb`) binary stack and the USD Stage runtime.
+    - **MeshConverterCfg**:
+        - `asset_path`: Path to the raw STL.
+        - `usd_dir`: Directory for the output USD.
+        - `force_usd_conversion`: Ensures a fresh conversion every time.
+        - `scale`: Essential for medical models (usually `0.001, 0.001, 0.001` to convert mm to meters).
+        - `rigid_props`: Applying `RigidBodyPropertiesCfg()` ensures the USD is recognized by the physics engine (PhysX) as a simulatable object.
+
+### 6.2 Bone Model Configuration
+- **Kinematic Bone**: In the environment config (`med7_env_cfg.py`), the bone is defined as a `RigidObjectCfg` with `kinematic_enabled=True`. This prevents gravity from affecting it while still allowing collision detection.
+- **Dynamic Updates**: By using `self.femur.write_root_pose_to_sim()`, we can "teleport" the bone to any tracked position in real-world time without breaking physics stability.
+
+---
+
+## Phase 7: ROS 2 Bone Tracking Integration
+
+This phase connects the simulation to external tracking systems using the ROS 2 (Robot Operating System) bridge.
+
+### 7.1 "Self-Healing" Library Logic
+Isaac Sim 5.1 bundles its own ROS 2 (`rclpy`) and libraries. To avoid manual `LD_LIBRARY_PATH` exports, we implemented a `setup_ros2_libs()` function at the top of our scripts:
+- **Action**: It detects the bundled path, sets the environment variable, and **re-executes the Python process** if the path was missing. 
+- **Benefit**: Makes the project completely portable across different machines.
+
+### 7.2 RSS Subscriber Logic
+- **Topic**: `/bone_pose`
+- **Message Type**: `geometry_msgs/msg/PoseStamped`
+- **Node**: `BoneTrackerNode` (in `teleop_med7.py`)
+- **Flow**: The node stores the latest pose in `latest_pos` and `latest_quat`, which are then applied to the environment via `env.update_femur_pose()` in the main simulation loop.
+
+---
+
+## 🗺️ Full Data Flow Architecture
+
+This flowchart displays how every component in the project interacts, from raw input to physical simulation.
+
+```mermaid
+graph TD
+    subgraph External_Inputs["Real World / External"]
+        K([Keyboard User]) -- "W,A,S,D,Q,E,I,J,K,L" --> Teleop
+        Tracker([Tracker / Mock Script]) -- "geometry_msgs/PoseStamped" --> Teleop
+    end
+
+    subgraph Scripts["Control Scripts (Python)"]
+        Teleop[teleop_med7.py] -- "Joint Position Commands" --> Env
+        Mock[mock_bone_publisher.py] -- "/bone_pose Topic" --> Teleop
+        LibFix[setup_ros2_libs] -- "Set LD_LIBRARY_PATH" --> Teleop
+    end
+
+    subgraph Logic["Environment Logic (Isaac Lab)"]
+        Env[med7_env.py] -- "update_femur_pose(pos, quat)" --> FemurPr[Femur Prim]
+        Env -- "DiffIK Controller" --> RoboPr[Robot Articulation]
+        Cfg[med7_env_cfg.py] -- "Asset Blueprints" --> Env
+    end
+
+    subgraph Simulation_Engine["Isaac Sim (PhysX)"]
+        RTX[RTX Rendering] --> View[Viewport Display]
+        PhysX[Physics Step] -->|Collision / State| Fabric[Fabric Data Layer]
+        Fabric -->|Observations| Env
+    end
+
+    RoboPr --> PhysX
+    FemurPr --> PhysX
+```
+
+---
+
 ## Summary of Code Evolution
 
 1.  **Direct Joint Control**: Started with simple joint-space movements.
-2.  **Differential IK**: Added Cartesian control for intuitive keyboard interaction.
+2.  **Differential IK**: Added Cartesian control for intuitive keyboard interaction and VR pose retargeting.
 3.  **DDS Integration (Removed)**: Initially attempted RTI DDS for streaming, but replaced it due to complexity.
-4.  **Flask + OpenXR**: The final, high-performance solution for Apple Vision Pro teleoperation, combining standard web technologies for streaming with robust hand-tracking retargeting.
-
+4.  **Flask + OpenXR**: High-performance streaming and VR control solution.
+5.  **Asset Pipeline**: Established a workflow for converting and tracking custom medical meshes (STL to USD).
+6.  **ROS 2 Bridge**: Completed real-time tracking for medical bones with self-healing dependency management.

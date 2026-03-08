@@ -170,6 +170,15 @@ class Med7EnvCfg(DirectRLEnvCfg):
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.5), rot=(1.0, 0.0, 0.0, 0.0)), # Visible initially
     )
+    femur = RigidObjectCfg(
+        prim_path="/World/envs/env_.*/femur",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/femur_cut_usd/Draw_Left_Femur_Plan_Array_V2.usd",
+            scale=(1.0, 1.0, 1.0), # USD is already scaled to meters
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(1.3, 0.0, 0.6), rot=(1.0, 0.0, 0.0, 0.0)), # On the bed
+    )
 
     def __post_init__(self):
         """Post initialization."""

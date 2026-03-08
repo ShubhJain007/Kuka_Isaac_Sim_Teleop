@@ -35,11 +35,23 @@ python scripts/teleop_med7.py
 ```
 
 #### 🥽 VR Teleoperation (Apple Vision Pro)
-1. **Setup CloudXR**: Set the environment variable to enable the external renderer:
+1. **Start CloudXR Runtime (Docker)**:
+   In a dedicated terminal, start the server-side runtime:
+   ```bash
+   docker run -it --rm --name cloudxr-runtime \
+       --user $(id -u):$(id -g) --gpus=all -e "ACCEPT_EULA=Y" \
+       --mount type=bind,src=$(pwd)/openxr,dst=/openxr \
+       -p 48010:48010 -p 47998-48000:47998-48000/udp \
+       -p 48005:48005/udp -p 48008:48008/udp -p 48012:48012/udp \
+       nvcr.io/nvidia/cloudxr-runtime:5.0.1
+   ```
+2. **Setup Environment**: In the terminal where you will run the script, export the runtime paths:
    ```bash
    export EXTERNAL_RENDERER=cloudxr
+   export XDG_RUNTIME_DIR=$(pwd)/openxr/run
+   export XR_RUNTIME_JSON=$(pwd)/openxr/share/openxr/1/openxr_cloudxr.json
    ```
-2. **Launch with Experience File**:
+3. **Launch the Simulation**:
    ```bash
    python scripts/teleop_med7_vr.py --experience apps/isaaclab.python.headless.cloudxr.kit
    ```

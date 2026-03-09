@@ -73,26 +73,63 @@ class BoneTrackerNode(Node):
         super().__init__("bone_tracker_node")
         # Import PoseStamped here to ensure it's loaded from the bridge path
         from geometry_msgs.msg import PoseStamped
-        self.subscription = self.create_subscription(
+        
+        # Femur subscription
+        self.femur_sub = self.create_subscription(
             PoseStamped,
-            "/bone_pose",
-            self.listener_callback,
+            "/bone_pose_femur",
+            self.femur_callback,
             10
         )
-        self.latest_pos = None
-        self.latest_quat = None
+        
+        # Tibia subscription
+        self.tibia_sub = self.create_subscription(
+            PoseStamped,
+            "/bone_pose_tibia",
+            self.tibia_callback,
+            10
+        )
+        
+        self.femur_pos = None
+        self.femur_quat = None
+        self.tibia_pos = None
+        self.tibia_quat = None
+        
+        self.femur_updated = False
+        self.tibia_updated = False
+        self._femur_msg_count = 0
+        self._tibia_msg_count = 0
 
-    def listener_callback(self, msg):
-        """Callback to store the latest received pose."""
+    def femur_callback(self, msg):
+        """Callback to store the latest received femur pose."""
         # ROS Pose uses (x, y, z, w), Isaac Lab uses (w, x, y, z)
-        self.latest_pos = torch.tensor(
+        self.femur_pos = torch.tensor(
             [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z], 
             device="cuda:0", dtype=torch.float32
         ).unsqueeze(0)
-        self.latest_quat = torch.tensor(
+        self.femur_quat = torch.tensor(
             [msg.pose.orientation.w, msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z], 
             device="cuda:0", dtype=torch.float32
         ).unsqueeze(0)
+        self.femur_updated = True
+        self._femur_msg_count += 1
+        if self._femur_msg_count == 1:
+            print("[ROS] First femur pose received!")
+
+    def tibia_callback(self, msg):
+        """Callback to store the latest received tibia pose."""
+        self.tibia_pos = torch.tensor(
+            [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z], 
+            device="cuda:0", dtype=torch.float32
+        ).unsqueeze(0)
+        self.tibia_quat = torch.tensor(
+            [msg.pose.orientation.w, msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z], 
+            device="cuda:0", dtype=torch.float32
+        ).unsqueeze(0)
+        self.tibia_updated = True
+        self._tibia_msg_count += 1
+        if self._tibia_msg_count == 1:
+            print("[ROS] First tibia pose received!")
 
 
 def main():
@@ -140,14 +177,19 @@ def main():
 
     # simulate physics
     while simulation_app.is_running():
-        # Spin ROS to process callbacks
-        rclpy.spin_once(ros_node, timeout_sec=0.0)
+        # Spin ROS to process callbacks (small timeout to actually check the queue)
+        rclpy.spin_once(ros_node, timeout_sec=0.001)
 
         # run everything in inference mode
         with torch.inference_mode():
             # Update femur pose if new data arrived
-            if ros_node.latest_pos is not None:
-                env.update_femur_pose(ros_node.latest_pos, ros_node.latest_quat)
+            if ros_node.femur_updated:
+                env.update_femur_pose(ros_node.femur_pos, ros_node.femur_quat)
+                ros_node.femur_updated = False
+            # Update tibia pose if new data arrived
+            if ros_node.tibia_updated:
+                env.update_tibia_pose(ros_node.tibia_pos, ros_node.tibia_quat)
+                ros_node.tibia_updated = False
 
             # get device command
             delta_pose = teleop_interface.advance()

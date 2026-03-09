@@ -34,29 +34,40 @@ from geometry_msgs.msg import PoseStamped
 class MockBonePublisher(Node):
     def __init__(self):
         super().__init__('mock_bone_publisher')
-        self.publisher_ = self.create_publisher(PoseStamped, '/bone_pose', 10)
+        self.femur_pub = self.create_publisher(PoseStamped, '/bone_pose_femur', 10)
+        self.tibia_pub = self.create_publisher(PoseStamped, '/bone_pose_tibia', 10)
         timer_period = 0.02  # 50Hz
         self.timer = self.create_timer(timer_period, self.timer_callback)
         self.start_time = time.time()
 
     def timer_callback(self):
         t = time.time() - self.start_time
-        msg = PoseStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'world'
         
-        # Move the bone in a small circle on the bed
-        msg.pose.position.x = 1.3 + 0.05 * math.cos(t)
-        msg.pose.position.y = 0.0 + 0.05 * math.sin(t)
-        msg.pose.position.z = 0.6
-        
-        # Constant orientation (no rotation)
-        msg.pose.orientation.x = 0.7071067811865476
-        msg.pose.orientation.y = 0.0
-        msg.pose.orientation.z = 0.0
-        msg.pose.orientation.w = 0.7071067811865476
-        
-        self.publisher_.publish(msg)
+        # Publish Femur
+        femur_msg = PoseStamped()
+        femur_msg.header.stamp = self.get_clock().now().to_msg()
+        femur_msg.header.frame_id = 'world'
+        femur_msg.pose.position.x = 1.3 + 0.05 * math.cos(t)
+        femur_msg.pose.position.y = 0.0 + 0.05 * math.sin(t)
+        femur_msg.pose.position.z = 0.6
+        femur_msg.pose.orientation.x = 0.7071067811865476
+        femur_msg.pose.orientation.y = 0.0
+        femur_msg.pose.orientation.z = 0.0
+        femur_msg.pose.orientation.w = 0.7071067811865476
+        self.femur_pub.publish(femur_msg)
+
+        # Publish Tibia (offset from femur)
+        tibia_msg = PoseStamped()
+        tibia_msg.header.stamp = self.get_clock().now().to_msg()
+        tibia_msg.header.frame_id = 'world'
+        tibia_msg.pose.position.x = 1.5 + 0.05 * math.cos(t + 0.5)
+        tibia_msg.pose.position.y = 0.0 + 0.05 * math.sin(t + 0.5)
+        tibia_msg.pose.position.z = 0.6
+        tibia_msg.pose.orientation.x = 0.7071067811865476
+        tibia_msg.pose.orientation.y = 0.0
+        tibia_msg.pose.orientation.z = 0.0
+        tibia_msg.pose.orientation.w = 0.7071067811865476
+        self.tibia_pub.publish(tibia_msg)
 
 def main(args=None):
     # This mock script doesn't have SimulationApp, so we need to mock 'carb' if rclpy imports it

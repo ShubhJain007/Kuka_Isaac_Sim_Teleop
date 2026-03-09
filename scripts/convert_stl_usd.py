@@ -3,6 +3,8 @@ from isaaclab.app import AppLauncher
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Convert STL to USD using Isaac Lab.")
+parser.add_argument("--asset_path", type=str, required=True, help="Path to the source STL file.")
+parser.add_argument("--usd_dir", type=str, required=True, help="Directory to save the converted USD file.")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -19,11 +21,12 @@ from isaaclab.sim.schemas import schemas_cfg
 
 def main():
     cfg = MeshConverterCfg(
-        asset_path='/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/Draw_Left_Femur_Plan_Array_V2.STL',
-        usd_dir='/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/femur_cut_usd',
+        asset_path=args_cli.asset_path,
+        usd_dir=args_cli.usd_dir,
         force_usd_conversion=True,
-        scale=(0.001, 0.001, 0.001), # Convert mm to meters
-        rigid_props=schemas_cfg.RigidBodyPropertiesCfg(), #otherwise no rigid body properties only the mesh
+        scale=(0.001, 0.001, 0.001),  # Convert mm to meters
+        rigid_props=None,      # No physics body — pure visual mesh
+        collision_props=None,  # No collision mesh
     )
 
     # MeshConverter handles conversion during __init__

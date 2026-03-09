@@ -63,7 +63,7 @@ class Med7EnvCfg(DirectRLEnvCfg):
         spawn=sim_utils.CuboidCfg(
             size=(2.0, 1.0, 0.55),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=BED_COLOR,
+                diffuse_color=(0.0,0.0,0.0),
                 metallic=0.05,
                 roughness=0.7,
             ),
@@ -166,20 +166,26 @@ class Med7EnvCfg(DirectRLEnvCfg):
                 diffuse_color=(0.0, 1.0, 0.0), # Lime green
                 opacity=0.5,
             ),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.5), rot=(1.0, 0.0, 0.0, 0.0)), # Visible initially
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.8), rot=(1.0, 0.0, 0.0, 0.0)), # Visible initially
     )
-    femur = RigidObjectCfg(
+    femur = AssetBaseCfg(
         prim_path="/World/envs/env_.*/femur",
         spawn=sim_utils.UsdFileCfg(
             usd_path="/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/femur_cut_usd/Draw_Left_Femur_Plan_Array_V2.usd",
-            scale=(1.0, 1.0, 1.0), # USD is already scaled to meters
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+            scale=(1.0, 1.0, 1.0),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(1.3, 0.0, 0.6), rot=(1.0, 0.0, 0.0, 0.0)), # On the bed
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(1.3, 0.0, 0.8), rot=(1.0, 0.0, 0.0, 0.0)),
     )
-
+    tibia = AssetBaseCfg(
+        prim_path="/World/envs/env_.*/tibia",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/tibia_cut_usd/tibia_cut.usd",
+            scale=(1.0, 1.0, 1.0),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(1.5, 0.0, 0.8), rot=(1.0, 0.0, 0.0, 0.0)),
+    )
     def __post_init__(self):
         """Post initialization."""
         super().__post_init__()

@@ -33,6 +33,10 @@ Run basic Cartesian control using your keyboard:
 ```bash
 python scripts/teleop_med7.py
 ```
+If startup fails (ROS 2 / `rclpy` / bridge issues), run without bone subscribers:
+```bash
+python scripts/teleop_med7.py --no-ros
+```
 
 #### 🥽 VR Teleoperation (Apple Vision Pro)
 1. **Start CloudXR Runtime (Docker)**:
@@ -45,18 +49,32 @@ python scripts/teleop_med7.py
        -p 48005:48005/udp -p 48008:48008/udp -p 48012:48012/udp \
        nvcr.io/nvidia/cloudxr-runtime:5.0.1
    ```
-2. **Setup Environment**: In the terminal where you will run the script, export the runtime paths:
+2. **Setup Environment**: With CloudXR **still running**, in the terminal where you launch Isaac Lab:
+   ```bash
+   cd /path/to/Kuka_Med_7
+   source scripts/cloudxr_env.sh
+   ```
+   This sets `EXTERNAL_RENDERER`, `XDG_RUNTIME_DIR`, `XR_RUNTIME_JSON`, and `LD_LIBRARY_PATH`.  
+   **`docker run` must bind-mount the same host `openxr` folder** you use for `XDG_RUNTIME_DIR`. Example: if Docker uses `--mount src=$HOME/IsaacLab/openxr,dst=/openxr`, then Isaac must use `$HOME/IsaacLab/openxr/run` — `cloudxr_env.sh` **auto-detects** that path from the running `cloudxr-runtime` container. Override with `export CLOUDXR_OPENXR_ROOT=/your/openxr` before `source` if needed.  
+   **If you see `ipc_cloudxr: No such file`:** start the container first, then `source scripts/cloudxr_env.sh` again. Run `bash scripts/check_cloudxr.sh` — it should show `[OK] IPC socket present`.
+3. **Launch the Simulation**:
+   The CloudXR experience is **not** bundled with the Isaac Lab installation — it is **this project’s** file at  
+   `apps/isaaclab.python.headless.cloudxr.kit` (under the repo root). From the repo root:
    ```bash
    export EXTERNAL_RENDERER=cloudxr
-   export XDG_RUNTIME_DIR=$(pwd)/openxr/run
-   export XR_RUNTIME_JSON=$(pwd)/openxr/share/openxr/1/openxr_cloudxr.json
+   python scripts/teleop_med7_vr.py --experience "$(pwd)/apps/isaaclab.python.headless.cloudxr.kit"
    ```
-3. **Launch the Simulation**:
-   ```bash
-   python scripts/teleop_med7_vr.py --experience apps/isaaclab.python.headless.cloudxr.kit
-   ```
-3. **Connect Vision Pro**: Open the CloudXR client on your headset and point to your workstation IP.
-4. **View Streams**: Open the Vision Pro Safari browser and navigate to `http://<YOUR_IP>:5000` to see the wrist and room cameras.
+   If `apps/` is missing, run `git pull` or recreate the file from the repository. **Fallback:** Isaac Lab’s stock XR headless kit, e.g.  
+   `<IsaacLab>/apps/isaaclab.python.xr.openxr.headless.kit`, plus `EXTERNAL_RENDERER=cloudxr` — hand-tracking toggles may differ from this repo’s kit.
+   Optional flags:
+   - `--ros` — subscribe to `/bone_pose_femur` and `/bone_pose_tibia` (same bone updates as keyboard teleop).
+   - `--keyboard-fallback` — also enable host keyboard (arrows, `[,]`, `P`, `K`, `1`/`2`, …) for debugging.
+   - `--sensitivity` — scales hand-tracking deltas.
+
+   **`teleop_med7_vr.py` (VR planning):** Moves the **surgical pointer / guide line / bone opacity** only; the robot joints are **held** (no arm IK). **By default everything is hand gestures:** pinch near the cyan probe to **grab & drag** the pointer; otherwise right wrist = probe motion, right thumb–index = line length (when not grabbing), left hand = opacity & gestures (see **`scripts/VR_PLANNING_WALKTHROUGH.md`**). Room MJPEG camera is an **OR-style view in front of the arm**. **`--keyboard-fallback`** opt-in for keys. Use **`teleop_med7.py`** for **keyboard arm** teleop.
+
+4. **Connect Vision Pro**: Open the CloudXR client on your headset and point to your workstation IP.
+5. **View Streams**: On Vision Pro Safari, open `http://<YOUR_IP>:5000` for MJPEG wrist/room cameras (optional alongside the CloudXR stereo view).
 
 ## 🛠️ Project Structure
 

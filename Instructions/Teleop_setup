@@ -1,0 +1,31 @@
+--- Instructions to run teleop----
+1. Start a terminal 
+2. conda actvate env_isaac
+3. Move to IsaacLab dir
+4. Paste: sudo ufw allow 47998:48000,48005,48008,48012/udp
+sudo ufw allow 48010/tcp
+5. start open xr director: docker run -it --rm --name cloudxr-runtime \
+    --user $(id -u):$(id -g) \
+    --gpus=all \
+    -e "ACCEPT_EULA=Y" \
+    --mount type=bind,src=$(pwd)/openxr,dst=/openxr \
+    -p 48010:48010 \
+    -p 47998:47998/udp \
+    -p 47999:47999/udp \
+    -p 48000:48000/udp \
+    -p 48005:48005/udp \
+    -p 48008:48008/udp \
+    -p 48012:48012/udp \
+    nvcr.io/nvidia/cloudxr-runtime:5.0.1
+    
+ 6. New terminal with same env 
+ 7. Move to Isaac_Lab_Projects/Kuka_Med_7/scripts
+ 8. source cloudxr_env.sh
+ 9. python teleop_med7_vr.py --ros --enable_cameras
+ 10. Once sim is online connect boh vision pro and PC to ur mobile hotspot
+ 11. Start VR from sim 
+ 12. Open teleop client app on AVP (last app in menu) then connect and play 
+ 13. gestures are written in terminal - but in general right hand is tracked to move the pointer around with a quick pinch from lrft hand locks its position and then the distance between your finger and thumb adjusts the line length for pointer and again quick left pinch locks it
+ 14.  ros2 topic echo /surgical_plan/probe_pose
+ros2 topic echo /surgical_plan/guide_line
+Publishes both pose pose and the line waypoints which can be sunscribed -> these topics publish only when the positino is locked 

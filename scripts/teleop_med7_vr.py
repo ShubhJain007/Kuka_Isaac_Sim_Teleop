@@ -126,12 +126,14 @@ parser.add_argument(
 parser.add_argument(
     "--avp-z",
     type=float,
-    default=0.825,
+    default=0.9271,
     metavar="METRES",
     help=(
         "Height (m) of robot arm base above the real floor detected by AVP. "
-        "Default 0.825 m ≈ table height (5 ft 5 in). Adjust to match your "
-        "actual table height so the arm appears to sit on the real table."
+        "Default 0.9271 m = 36.5 in pedestal height, so the virtual pedestal "
+        "bottom lands on the AVP floor and the arm sits on top. Adjust if "
+        "the real pedestal / table you're standing next to has a different "
+        "height (so the virtual and real surfaces line up)."
     ),
 )
 parser.add_argument(
@@ -1041,6 +1043,40 @@ def main():
         return m
 
     env.reset()
+
+    # ── Seed arm from the first /lbr/joint_states message (ROS-matched init) ──
+    # Eliminates the home-pose "slam" at startup: the arm is placed at whatever
+    # the bag / FRI driver is currently publishing, same as what RViz would show.
+    if ros_node is not None and rclpy_mod is not None:
+        print("[INFO] Waiting for first /lbr/joint_states to seed arm init pose …")
+        _seed_deadline = time.time() + 10.0   # max 10 s wait
+        while (ros_node.joint_positions is None
+                and simulation_app.is_running()
+                and time.time() < _seed_deadline):
+            rclpy_mod.spin_once(ros_node, timeout_sec=0.1)
+        if ros_node.joint_positions is not None:
+            _ros_names   = ros_node.joint_names
+            _isaac_names = [env.robot.data.joint_names[i] for i in joint_ids]
+            try:
+                _reorder  = [_ros_names.index(n) for n in _isaac_names]
+                _init_arm = ros_node.joint_positions[_reorder].to(env.device)
+                _full_pos = env.robot.data.joint_pos.clone()
+                _full_vel = torch.zeros_like(env.robot.data.joint_vel)
+                for _k, _j in enumerate(joint_ids):
+                    _full_pos[0, _j] = _init_arm[_k]
+                env.robot.write_joint_state_to_sim(_full_pos, _full_vel)
+                env.robot.set_joint_position_target(_full_pos)
+                print(f"[INFO] Arm seeded from ROS: "
+                      + ", ".join(f"{n}={v:+.3f}" for n, v in zip(_isaac_names, _init_arm.cpu().tolist())))
+            except ValueError as _vmap:
+                print(f"[WARN] Could not map ROS joint names to Isaac: {_vmap}. Using default init pose.")
+        else:
+            print("[WARN] No /lbr/joint_states received in 10 s — using default init pose.")
+
+        # Confirm the seed landed in sim state before the main loop starts.
+        _post_seed = env.robot.data.joint_pos[0, joint_ids].detach().cpu().tolist()
+        print("[SEED-CHECK] sim joint_pos =", ["%+.3f" % v for v in _post_seed])
+
     stage = omni.usd.get_context().get_stage()
     probe_prim, line_prim, stylus_prim = _setup_surgical_plan_prims(stage)
     print(f"[INFO] Surgical pointer: {probe_prim_path} valid={probe_prim.IsValid()}  guide: {line_prim_path} valid={line_prim.IsValid()}")
@@ -1193,18 +1229,18 @@ def main():
                         UsdGeom.Xformable(_tib_prim).MakeMatrixXform().Set(_mat)
                     ros_node.tibia_origin_updated = False
 
-                # Robot state sync (currently disabled - use for monitoring only)
-                # Uncommenting this will override VR teleoperation with ROS joint states
-                # if ros_node.robot_state_updated:
-                #     if ros_node.joint_positions is not None:
-                #         try:
-                #             env.sync_robot_joint_state(ros_node.joint_names, ros_node.joint_positions)
-                #         except RuntimeError as e:
-                #             if "inference" in str(e).lower():
-                #                 pass  # Skip if in inference mode
-                #             else:
-                #                 raise
-                #     ros_node.robot_state_updated = False
+                # Force arm to track ROS joint positions every frame (teleport).
+                # This bypasses PD transient / joint-limit stickiness / collision
+                # response and pins the articulation to whatever /lbr/joint_states
+                # publishes.  The PD target below is also set to the same values,
+                # so PD does not fight the teleport between frames.
+                if ros_node.robot_state_updated and ros_node.joint_positions is not None:
+                    try:
+                        env.sync_robot_joint_state(ros_node.joint_names, ros_node.joint_positions)
+                    except RuntimeError as e:
+                        if "inference" not in str(e).lower():
+                            raise
+                    ros_node.robot_state_updated = False
 
             if teleop_interface is not None:
                 delta_pose = teleop_interface.advance()
@@ -1683,14 +1719,24 @@ def main():
                     guide_line_pub.publish(line_msg)
 
                 if ros_node is not None and ros_node.joint_positions is not None:
-                    # Reorder ROS joints to match Isaac Sim joint order                                                                                                                                                          
-                    ros_names = ros_node.joint_names                                                                                                                                                                             
-                    isaac_names = [env.robot.data.joint_names[i] for i in joint_ids]                                                                                                                                             
-                    reorder = [ros_names.index(n) for n in isaac_names]                                                                                                                                                          
-                    joint_pos_des = ros_node.joint_positions[reorder].unsqueeze(0)                                                                                                                                               
-                else:                                                                                                                                                                                                            
-                    joint_pos_des = env.robot.data.joint_pos[:, joint_ids].clone()  
-                                                                                                                                                                                                                            
+                    # Reorder ROS joints to match Isaac Sim joint order
+                    ros_names = ros_node.joint_names
+                    isaac_names = [env.robot.data.joint_names[i] for i in joint_ids]
+                    reorder = [ros_names.index(n) for n in isaac_names]
+                    joint_pos_des = ros_node.joint_positions[reorder].unsqueeze(0)
+                else:
+                    joint_pos_des = env.robot.data.joint_pos[:, joint_ids].clone()
+
+                # ── DIAG: compare ROS-commanded vs Isaac-observed joint angles ──
+                if ros_node is not None and ros_node.joint_positions is not None and step_count % 30 == 0:
+                    _cmd = joint_pos_des[0].detach().cpu().numpy()
+                    _cur = env.robot.data.joint_pos[0, joint_ids].detach().cpu().numpy()
+                    _names_short = [n.replace("lbr_", "") for n in isaac_names]
+                    print("[DIAG] joint :", "  ".join(f"{n:>3}" for n in _names_short))
+                    print("[DIAG] CMD   :", "  ".join(f"{x:+.3f}" for x in _cmd))
+                    print("[DIAG] SIM   :", "  ".join(f"{x:+.3f}" for x in _cur))
+                    print("[DIAG] DIFF  :", "  ".join(f"{(c-s):+.3f}" for c, s in zip(_cmd, _cur)))
+
                 try:
                     env.step(joint_pos_des)
                 except Exception as e:

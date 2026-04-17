@@ -25,7 +25,10 @@ def main():
         usd_dir=args_cli.usd_dir,
         force_usd_conversion=True,
         scale=(0.001, 0.001, 0.001),  # Convert mm to meters
-        rigid_props=None,      # No physics body — pure visual mesh
+        mass_props=schemas_cfg.MassPropertiesCfg(mass=0.001),
+        rigid_props=schemas_cfg.RigidBodyPropertiesCfg(
+            kinematic_enabled=True, disable_gravity=True,
+        ),
         collision_props=None,  # No collision mesh
     )
 

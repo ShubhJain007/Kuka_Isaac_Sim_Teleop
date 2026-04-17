@@ -29,7 +29,7 @@ Once the robot was defined, we created the clinical environment and the simulati
 - **Key Components**:
     - **Hospital Bed & Mount**: Custom cuboids with realistic materials (`BED_COLOR`, `MOUNT_COLOR`).
     - **Lighting**: Realistic cool-white dome lighting (6500K) and warm distant sunlight.
-    - **Cameras**: Added `wrist_camera` (on `lbr_link_7`) and `room_camera` (static) for teleoperation feedback.
+    - **Cameras**: `wrist_camera` on `lbr_link_7`; `room_camera` static in front of the arm (OR-style view) for MJPEG. VR planning also draws OpenXR **hand stick figures** under `/World/SurgicalPlan/HandStick/`.
     - **XR Configuration**: Sets up the `OpenXRDeviceCfg` for VR integration.
 
 ### 2.2 `source/Kuka_Med_7/Kuka_Med_7/tasks/med7/med7_env.py`
@@ -196,6 +196,41 @@ Isaac Sim 5.1 bundles its own ROS 2 (`rclpy`) and libraries. To avoid manual `LD
 - **Node**: `BoneTrackerNode` (in `teleop_med7.py`)
 - **Flow**: The node stores the latest pose in `latest_pos` and `latest_quat`, which are then applied to the environment via `env.update_femur_pose()` in the main simulation loop.
 
+### 7.3 EKF-Based Bone Pose Smoothing
+
+ROS `/tf` messages arrive at ~20 Hz from the tracking system, but Isaac Sim renders at 60-120 Hz. To fill the gaps and produce smooth, continuous bone motion we use an **Extended Kalman Filter (EKF)** per bone (femur, tibia).
+
+#### State Model
+
+| Component | State Vector | Model |
+|---|---|---|
+| **Position** | `[x, y, z, vx, vy, vz]` (6-state) | Constant-velocity with process noise |
+| **Orientation** | Quaternion `[w,x,y,z]` + angular velocity `[ωx,ωy,ωz]` | Angular-velocity propagation + SLERP correction |
+
+#### Why EKF over LERP/SLERP interpolation
+
+| LERP/SLERP (previous) | EKF (current) |
+|---|---|
+| Can only interpolate *between* two known samples | **Predicts forward** beyond the latest sample using velocity |
+| Holds at the last value when measurements stop, then jumps | Smooth coast-down via velocity decay |
+| No noise filtering — passes sensor jitter directly | Kalman gain balances process model vs measurement noise |
+| Bag restart causes stale buffer problems | EKF auto-reinitializes on large position jumps (>50 cm) |
+
+#### Predict–Update Cycle
+
+1. **Predict** (every render frame, ~120 Hz): propagate position via `x += v·dt`, quaternion via angular-velocity integration.
+2. **Update** (on each `/tf` measurement, ~20 Hz): Kalman correction for position; SLERP-blend correction for orientation. Angular velocity estimated from measurement delta with EMA smoothing (α=0.4).
+
+#### Tuning Parameters
+
+| Parameter | Default | Purpose |
+|---|---|---|
+| `process_noise_pos` | 0.05 | How much position is allowed to drift per second² |
+| `process_noise_vel` | 2.0 | How much velocity is allowed to change per second |
+| `meas_noise_pos` | 0.002 | Trust in position measurements (lower = more trust) |
+| `process_noise_quat` | 0.1 | Orientation prediction uncertainty |
+| `meas_noise_quat` | 0.01 | Trust in orientation measurements |
+
 ---
 
 ## 🗺️ Full Data Flow Architecture
@@ -233,6 +268,60 @@ graph TD
 
 ---
 
+## ArUco Marker–Based Surgical Stylus Tracking
+
+### Overview
+
+The surgical pointer is now tracked via a physical **ArUco marker** (DICT_5X5_50, ID 10, 50 × 50 mm outer / 38 × 38 mm inner) attached to the stylus.  The Apple Vision Pro detects the marker in its camera feed and streams a full **6-DOF pose** (4 × 4 SE(3) matrix) through `avp_stream.get_markers(10)`.
+
+### Why this is better than hand tracking for the probe
+
+| Hand tracking (previous) | ArUco marker (current) |
+|---|---|
+| Index-finger tip ≈ probe tip — no rotation info | Full 6-DOF: position **and** approach vector |
+| Requires the surgeon's hand to hold a pose | Rigid stylus gives stable, repeatable pose |
+| Cannot distinguish orientation of the needle | Physical orientation of the marker IS the needle direction |
+| Approach vector had to be published separately as a fixed Euler angle | Approach vector is directly the marker's −Z axis in world frame |
+
+### USD Scene Hierarchy
+
+```
+/World/envs/env_0/SurgicalPlan/
+└── StylusTracker  (UsdGeom.Xform)          ← receives 6-DOF from get_markers(10)
+    ├── StylusTip   (UsdGeom.Sphere, r=7.2mm, green)  ← at local [0,0,−tip_offset]
+    └── ApproachLine (UsdGeom.Cylinder, r=0.8mm, green) ← along local −Z, length=tip_offset
+```
+
+`StylusTracker` is set **invisible** by default and becomes visible only when the AVP detects the marker.
+
+### Coordinate convention
+
+- Marker's **local −Z** axis → physical needle direction (approach vector into bone).
+- `StylusTip` is offset `STYLUS_TIP_OFFSET = 0.10 m` (10 cm) along local −Z from the marker centre (adjust to match actual stylus geometry).
+- Children (`StylusTip`, `ApproachLine`) follow the parent `StylusTracker` automatically — no separate transform math needed.
+
+### Dwell-based lock (unchanged)
+
+Holding the stylus still (< 5 mm displacement) for **2 seconds** locks both the position **and orientation** (full 6-DOF).  The locked pose is published on ROS.  Returning to the locked point and holding still for another 2 s unlocks.
+
+### ROS output topics (when locked)
+
+| Topic | Type | Contents |
+|---|---|---|
+| `/surgical_plan/probe_pose` | `geometry_msgs/PoseStamped` | Probe tip position + marker orientation as quaternion |
+| `/surgical_plan/guide_line` | `geometry_msgs/PoseArray` | [tip + approach_depth offset, tip] — approach line segment |
+
+When the ArUco marker is visible, the quaternion is derived directly from the marker's rotation matrix via `scipy.spatial.transform.Rotation.from_matrix()`, giving a physically accurate approach vector.  When the marker is not detected, the system falls back to the fixed Euler angles.
+
+### Key parameters (`teleop_med7_vr.py`)
+
+```python
+ARUCO_MARKER_ID   = 10     # DICT_5X5_50 ID printed on the stylus
+STYLUS_TIP_OFFSET = 0.10   # metres: marker centre → physical needle tip along −Z
+```
+
+---
+
 ## Summary of Code Evolution
 
 1.  **Direct Joint Control**: Started with simple joint-space movements.
@@ -241,3 +330,4 @@ graph TD
 4.  **Flask + OpenXR**: High-performance streaming and VR control solution.
 5.  **Asset Pipeline**: Established a workflow for converting and tracking custom medical meshes (STL to USD).
 6.  **ROS 2 Bridge**: Completed real-time tracking for medical bones with self-healing dependency management.
+7.  **ArUco Stylus Tracker**: Replaced hand-tracking probe with ArUco marker 6-DOF tracking for true approach-vector control.

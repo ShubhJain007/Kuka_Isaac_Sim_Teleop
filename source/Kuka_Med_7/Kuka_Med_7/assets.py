@@ -7,6 +7,7 @@ from isaaclab.actuators import ImplicitActuatorCfg
 MED7_CONFIG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         asset_path="/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/med7.urdf",
+        force_usd_conversion=True,
         fix_base=True,
         joint_drive=sim_utils.UrdfFileCfg.JointDriveCfg(
             target_type="none",
@@ -25,11 +26,11 @@ MED7_CONFIG = ArticulationCfg(
     init_state=ArticulationCfg.InitialStateCfg(
         pos={
             "lbr_A1": 0.0,
-            "lbr_A2": 0.0,
+            "lbr_A2": 0.5,
             "lbr_A3": 0.0,
-            "lbr_A4": 0.0,
+            "lbr_A4": -1.0,
             "lbr_A5": 0.0,
-            "lbr_A6": 0.0,
+            "lbr_A6": 1.0,
             "lbr_A7": 0.0,
         },
     ),

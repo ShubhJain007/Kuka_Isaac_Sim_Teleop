@@ -176,7 +176,18 @@ class Med7Scene:
 
         # Raise robot to sit on top of mount
         xf = UsdGeom.Xformable(robot_prim)
-        xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, self.cfg.robot_base_height))
+        existing_ops = xf.GetOrderedXformOps()
+        if existing_ops:
+            for op in existing_ops:
+                if op.GetOpName() == "xformOp:translate":
+                    op.Set(Gf.Vec3d(0.0, 0.0, self.cfg.robot_base_height))
+                    break
+            else:
+                mat = Gf.Matrix4d()
+                mat.SetTranslateOnly(Gf.Vec3d(0.0, 0.0, self.cfg.robot_base_height))
+                xf.MakeMatrixXform().Set(mat)
+        else:
+            xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, self.cfg.robot_base_height))
 
         # Find link prims by name for FK
         for prim in stage.Traverse():

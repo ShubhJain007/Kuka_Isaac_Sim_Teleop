@@ -88,6 +88,7 @@ def main():
                 shutil.rmtree(cache)
             avp = VisionProStreamer(ip=args.avp, origin="sim")
             avp.configure_isaac(
+                scene=None,
                 stage=stage,
                 relative_to=[0.0, 0.0, args.avp_z, args.avp_yaw],
                 include_ground=False,

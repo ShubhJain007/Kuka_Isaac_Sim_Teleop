@@ -62,6 +62,7 @@ class Med7Scene:
         self._stage = None
         self._link_prim_paths: dict[str, str] = {}
         self._joint_angles = np.zeros(7)
+        self._fk_logged = False
 
     def setup(self, stage):
         """Build the full scene on the given USD stage."""
@@ -255,47 +256,36 @@ class Med7Scene:
     def set_joint_positions(self, joint_angles: dict[str, float]):
         """Apply joint angles via forward kinematics — pure xform, no PhysX.
 
-        Walks the kinematic chain, computes each link's world transform,
-        and writes it directly to the USD prim.
+        Sets each link's LOCAL transform (origin + joint rotation).
+        The USD hierarchy handles parent-child composition automatically.
         """
         from pxr import UsdGeom, Gf
 
         if not self._link_prim_paths:
             return
 
-        # Start from robot base
-        base_path = self._link_prim_paths.get("lbr_link_0")
-        if base_path is None:
-            return
+        if not self._fk_logged:
+            print(f"[FK] Applying joints: { {k: round(v, 3) for k, v in joint_angles.items()} }")
+            self._fk_logged = True
 
-        base_prim = self._stage.GetPrimAtPath(base_path)
-        if not base_prim or not base_prim.IsValid():
-            return
-
-        # Base transform: robot sits at (0, 0, robot_base_height)
-        T = np.eye(4)
-        T[2, 3] = self.cfg.robot_base_height
-
-        for i, (jname, parent_link, child_link, origin_xyz, origin_rpy, axis) in enumerate(_JOINT_CHAIN):
+        for jname, parent_link, child_link, origin_xyz, origin_rpy, axis in _JOINT_CHAIN:
             angle = joint_angles.get(jname, 0.0)
 
-            # Joint origin transform: translate + rotate (rpy is always 0 for Med7)
+            # Local = origin translation, then joint rotation about axis
             T_origin = np.eye(4)
             T_origin[:3, 3] = origin_xyz
 
-            # Joint rotation around axis
+            T_rot = np.eye(4)
             axis_np = np.array(axis, dtype=np.float64)
-            T_joint = np.eye(4)
             if abs(angle) > 1e-10:
-                T_joint[:3, :3] = R.from_rotvec(axis_np * angle).as_matrix()
+                T_rot[:3, :3] = R.from_rotvec(axis_np * angle).as_matrix()
 
-            T = T @ T_origin @ T_joint
+            T_local = T_origin @ T_rot
 
-            # Apply to child link prim
             child_path = self._link_prim_paths.get(child_link)
             if child_path is None:
                 continue
-            self._set_matrix_xform(child_path, T)
+            self._set_matrix_xform(child_path, T_local)
 
     def _set_matrix_xform(self, prim_path: str, T: np.ndarray):
         """Set a prim's transform from a 4x4 numpy matrix.

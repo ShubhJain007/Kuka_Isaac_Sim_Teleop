@@ -97,6 +97,8 @@ class RosBridge:
             "tracked/femur_origin": "femur",
             "tracked/tibia_origin": "tibia",
         }
+        self._joint_logged = False
+        self._tf_logged = False
 
     def spin_once(self):
         """Process pending ROS callbacks (non-blocking)."""
@@ -104,9 +106,14 @@ class RosBridge:
 
     def _tf_cb(self, msg):
         for tf in msg.transforms:
+            if not self._tf_logged:
+                print(f"[ROS] TF frame received: child={tf.child_frame_id} parent={tf.header.frame_id}")
             bone = self._tf_frame_map.get(tf.child_frame_id)
             if bone is None:
                 continue
+            if not self._tf_logged:
+                print(f"[ROS] Matched bone: {bone}")
+                self._tf_logged = True
 
             t = tf.transform.translation
             r = tf.transform.rotation
@@ -126,6 +133,9 @@ class RosBridge:
         self.joint_names = list(msg.name)
         self.joint_positions = np.array(msg.position, dtype=np.float64)
         self.joint_updated = True
+        if not self._joint_logged:
+            print(f"[ROS] First joint_states: names={self.joint_names} pos={self.joint_positions.tolist()}")
+            self._joint_logged = True
 
     def get_clock(self):
         return self._node.get_clock()

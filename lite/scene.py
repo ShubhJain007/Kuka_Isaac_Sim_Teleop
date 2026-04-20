@@ -144,8 +144,9 @@ class Med7Scene:
         import_config.make_default_prim = False
         import_config.create_physics_scene = False
 
-        result = urdf_api.parse_urdf(urdf_path, import_config)
-        urdf_api.import_robot(urdf_path, result, import_config, "/World/Robot")
+        dest_path = "/World/Robot"
+        parsed = urdf_api.parse_urdf(urdf_path, dest_path, import_config)
+        urdf_api.import_robot(dest_path, parsed, import_config, "")
 
         robot_prim = stage.GetPrimAtPath("/World/Robot")
         if not robot_prim or not robot_prim.IsValid():

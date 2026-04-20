@@ -87,6 +87,12 @@ def main():
             if os.path.isdir(cache):
                 shutil.rmtree(cache)
             avp = VisionProStreamer(ip=args.avp, origin="sim")
+            avp.configure_isaac(
+                stage=stage,
+                relative_to=[0.0, 0.0, args.avp_z, args.avp_yaw],
+                include_ground=False,
+                force_reload=True,
+            )
             avp.start_webrtc()
             print(f"[AVP] Ready → {args.avp} (z={args.avp_z}m)")
         except ImportError:

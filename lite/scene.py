@@ -147,11 +147,31 @@ class Med7Scene:
         urdf_dir = os.path.dirname(urdf_path)
         urdf_file = os.path.basename(urdf_path)
         parsed = urdf_api.parse_urdf(urdf_dir, urdf_file, import_config)
-        urdf_api.import_robot(urdf_dir, urdf_file, parsed, import_config)
+        result = urdf_api.import_robot(urdf_dir, urdf_file, parsed, import_config)
+        print(f"[SCENE] URDF import result: {result}")
 
-        robot_prim = stage.GetPrimAtPath("/World/Robot")
-        if not robot_prim or not robot_prim.IsValid():
-            print("[WARN] Robot prim not valid after URDF import")
+        # Find the robot root prim — importer uses the URDF robot name
+        robot_prim = None
+        for candidate in ["/med7", "/World/med7", "/World/Robot", f"/{urdf_file.replace('.urdf', '')}"]:
+            p = stage.GetPrimAtPath(candidate)
+            if p and p.IsValid():
+                robot_prim = p
+                print(f"[SCENE] Robot prim found at: {candidate}")
+                break
+
+        if robot_prim is None:
+            # Fallback: search stage for any prim containing lbr_link_0
+            for prim in stage.Traverse():
+                if prim.GetName() == "lbr_link_0":
+                    robot_prim = prim.GetParent()
+                    print(f"[SCENE] Robot prim found via link search: {robot_prim.GetPath()}")
+                    break
+
+        if robot_prim is None:
+            print("[WARN] Robot prim not found after URDF import")
+            print("[DEBUG] Top-level prims:")
+            for child in stage.GetPseudoRoot().GetChildren():
+                print(f"  {child.GetPath()}")
             return
 
         # Raise robot to sit on top of mount
@@ -267,18 +287,22 @@ class Med7Scene:
             self._set_matrix_xform(child_path, T)
 
     def _set_matrix_xform(self, prim_path: str, T: np.ndarray):
-        """Set a prim's transform from a 4x4 numpy matrix."""
+        """Set a prim's transform from a 4x4 numpy matrix.
+
+        USD Gf.Matrix4d uses row-vector convention (transpose of numpy).
+        """
         from pxr import UsdGeom, Gf
 
         prim = self._stage.GetPrimAtPath(prim_path)
         if not prim or not prim.IsValid():
             return
 
+        M = T.T  # transpose: numpy column-vector → USD row-vector
         mat = Gf.Matrix4d(
-            T[0, 0], T[0, 1], T[0, 2], T[0, 3],
-            T[1, 0], T[1, 1], T[1, 2], T[1, 3],
-            T[2, 0], T[2, 1], T[2, 2], T[2, 3],
-            T[3, 0], T[3, 1], T[3, 2], T[3, 3],
+            M[0, 0], M[0, 1], M[0, 2], M[0, 3],
+            M[1, 0], M[1, 1], M[1, 2], M[1, 3],
+            M[2, 0], M[2, 1], M[2, 2], M[2, 3],
+            M[3, 0], M[3, 1], M[3, 2], M[3, 3],
         )
         UsdGeom.Xformable(prim).MakeMatrixXform().Set(mat)
 

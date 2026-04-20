@@ -181,8 +181,9 @@ class Med7Scene:
             if os.path.isfile(usd_path):
                 prim = stage.DefinePrim(prim_path)
                 prim.GetReferences().AddReference(usd_path)
-                xf = UsdGeom.Xformable(prim)
-                xf.AddTranslateOp().Set(Gf.Vec3d(*init_pos))
+                mat = Gf.Matrix4d()
+                mat.SetTranslateOnly(Gf.Vec3d(*init_pos))
+                UsdGeom.Xformable(prim).MakeMatrixXform().Set(mat)
                 print(f"[SCENE] {name} loaded at {prim_path}")
             else:
                 print(f"[WARN] Bone USD not found: {usd_path}")

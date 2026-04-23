@@ -167,64 +167,6 @@ class Med7EnvCfg(DirectRLEnvCfg):
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(-0.263, 0.181, 0.449), rot=(1.0, 0.0, 0.0, 0.0)),
     )
-    # ---------------------------------------------------------------
-    # Bone initial poses — LEFT/RIGHT knee joint, 45° interior angle.
-    # Knee joint at (0.90, 0.0, 0.75), bones touching at that point.
-    # Matches mock_bone_publisher.py t=0 pose (no swing).
-    #
-    # Front view (from robot, looking along +X):
-    #
-    #      femur /   (up-left, direction (0, -0.707, +0.707))
-    #           /
-    #          ●───────────  tibia (horizontal +Y, direction (0, 1, 0))
-    #
-    # Interior angle = 45°  ✓   Rotation axis = X  ✓
-    #
-    # USD mesh 'up' axis = +Z.  Orientations:
-    #   Femur  : rotate +Z → (0, −0.7071, +0.7071) = +X rotation by 45°
-    #     quat (w,x,y,z) = (cos22.5°,  sin22.5°, 0, 0) = (0.9239,  0.3827, 0, 0)
-    #   Tibia  : rotate +Z → (0, 1, 0) = −X rotation by 90°
-    #     quat (w,x,y,z) = (cos45°, −sin45°, 0, 0) = (0.7071, −0.7071, 0, 0)
-    #
-    # Positions seeded from STL geometric centres (both centre at knee joint):
-    #   Femur STL centre (m): (−0.004, 0.0147, −0.0026)  → rotate by femur_quat
-    #   Tibia STL centre (m): (−0.0892, −0.0374, 0.0833) → rotate by tibia_quat
-    # ◄ After rotate, subtract from knee to get USD origin world pos.
-    # Pre-computed below (rounded to 4 dp).
-    # ---------------------------------------------------------------
-    femur = AssetBaseCfg(
-        prim_path="/World/envs/env_.*/femur",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/femur_cut_usd/Draw_Left_Femur_Plan_Array_V2.usd",
-            scale=(1.0, 1.0, 1.0),
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(
-            # Rotated additional 180° about Y (total = 360° = identity)
-            pos=(0.904,  0.133,  0.7442),
-            rot=(1.0, 0.0, 0.0, 0.0),
-        ),
-    )
-    tibia = AssetBaseCfg(
-        prim_path="/World/envs/env_.*/tibia",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path="/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/tibia_cut_usd/tibia_cut.usd",
-            scale=(1.0, 1.0, 1.0),
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(
-            # q_tibia = (0.7071, −0.7071, 0, 0) → rotate((−0.0892,−0.0374,0.0833))
-            # +Z→+Y:  x'=x, y'=−z, z'=y  (90° about −X)
-            # rotated offset = (−0.0892, −0.0833, −0.0374)
-            # pos = (0.90−0.0892*(−0.0892), 0.0−(−0.0833), 0.75−(−0.0374))
-            # simpler: pos = (0.90, 0.0, 0.75) − rotate(offset, q_tibia)
-            # rotate((−0.0892,−0.0374,0.0833), (0.7071,−0.7071,0,0)):
-            #   Using R_x(-90°): x'=x, y'=z, z'=−y
-            #   = (−0.0892, 0.0833, 0.0374)
-            # pos = (0.90−(−0.0892), 0.0−0.0833, 0.75−0.0374)
-            #      = (0.9892, −0.0833, 0.7126)
-            pos=(0.9892, -0.0833,  0.7126),
-            rot=(0.0, 0.0, 0.0, 0.7071),
-        ),
-    )
     # End-effector mount — registered as RigidObject (kinematic, no physics) so that
     # avp_stream streams its pose every frame (streamer.py:3261-3272). Static AssetBaseCfg
     # poses are only sent for the first 5 frames — useless for something that moves.
@@ -240,6 +182,31 @@ class Med7EnvCfg(DirectRLEnvCfg):
         init_state=RigidObjectCfg.InitialStateCfg(
             pos=(0.0, 0.0, 1.5),
             rot=(0.0, 0.0, 1.0, 0.0),
+        ),
+    )
+    # ---------------------------------------------------------------
+    # Bone initial poses — ORDER TEST: tibia first (between EEMount and femur)
+    # ---------------------------------------------------------------
+    tibia = AssetBaseCfg(
+        prim_path="/World/envs/env_.*/tibia",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/tibia_cut_usd/tibia_cut.usd",
+            scale=(1.0, 1.0, 1.0),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(0.9892, -0.0833,  0.7126),
+            rot=(0.0, 0.0, 0.0, 0.7071),
+        ),
+    )
+    femur = AssetBaseCfg(
+        prim_path="/World/envs/env_.*/femur",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path="/home/kneepolean/Isaac_Lab_projects/Kuka_Med_7/femur_cut_usd/Draw_Left_Femur_Plan_Array_V2.usd",
+            scale=(1.0, 1.0, 1.0),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(0.904,  0.133,  0.7442),
+            rot=(0.0, 0.0, 0.0, 0.7071),
         ),
     )
 

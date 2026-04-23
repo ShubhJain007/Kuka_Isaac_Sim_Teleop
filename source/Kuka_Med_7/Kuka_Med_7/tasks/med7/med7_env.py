@@ -77,6 +77,16 @@ class Med7Env(DirectRLEnv):
         self._femur_prim_path = "/World/envs/env_0/femur"
         self._tibia_prim_path = "/World/envs/env_0/tibia"
 
+        # DUMMY SPACER TEST (2026-04-22): empty Xform between EEMount and femur.
+        # Tests whether USD-graph adjacency to EEMount (whose transform is rewritten
+        # every frame) is what causes the femur jitter.
+        # REVERT: delete this import + Define block.
+        import omni.usd as _omni_usd_dbg
+        from pxr import UsdGeom as _UsdGeom_dbg
+        _stage_dbg = _omni_usd_dbg.get_context().get_stage()
+        _UsdGeom_dbg.Xform.Define(_stage_dbg, "/World/envs/env_0/ZZZSpacer")
+        print("[DBG] Spawned spacer prim /World/envs/env_0/ZZZSpacer (between EEMount and femur)")
+
         if hasattr(self.cfg, "femur") and self.cfg.femur is not None:
             self.cfg.femur.spawn.func(
                 self.cfg.femur.prim_path,

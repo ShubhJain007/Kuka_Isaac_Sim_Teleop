@@ -90,6 +90,8 @@ if "--ros" in sys.argv:
 
 import os
 
+from udp_rtt_probe import UdpRttProbe
+
 import gymnasium as gym
 import numpy as np
 import torch
@@ -145,6 +147,14 @@ parser.add_argument(
 )
 AppLauncher.add_app_launcher_args(parser)
 parser.add_argument("--debug-xr", action="store_true", help="Extra diagnostics.")
+parser.add_argument(
+    "--log-render-bones",
+    type=float,
+    default=0.0,
+    metavar="SECONDS",
+    help="Record actual rendered femur/tibia USD poses for DUR seconds, "
+         "write CSV to scripts/rendered_bones.csv (plot with plot_rendered_bone.py).",
+)
 args_cli = parser.parse_args()
 
 app_launcher = AppLauncher(args_cli)
@@ -163,7 +173,14 @@ from Kuka_Med_7.tasks.med7.med7_env_cfg import Med7EnvCfg
 _IR_SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "ir_tracking" / "scripts"
 if str(_IR_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_IR_SCRIPTS))
-from pose_ekf import PoseEKF  # noqa: E402
+try:
+    from pose_ekf import PoseEKF  # noqa: E402
+except ModuleNotFoundError:
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("pose_ekf", str(_IR_SCRIPTS / "pose_ekf.py"))
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    PoseEKF = _mod.PoseEKF
 
 def vr_delta_to_probe_deltas(
     delta_pose: torch.Tensor,
@@ -1140,6 +1157,20 @@ def main():
             print(f"[AVP] ERROR during setup: {e}")
             avp_streamer = None
 
+    # ── UDP RTT probe (latency measurement to Vision Pro) ──────────────
+    rtt_probe = None
+    rtt_pub = None
+    if args_cli.avp is not None:
+        try:
+            rtt_probe = UdpRttProbe(args_cli.avp)
+            print(f"[RTT] UDP probe started → {args_cli.avp}:9998")
+        except Exception as e:
+            print(f"[RTT] Failed to start probe: {e}")
+    if rtt_probe is not None and ros_node is not None:
+        from std_msgs.msg import Float32
+        rtt_pub = ros_node.create_publisher(Float32, "/avp/rtt_ms", 10)
+        print("[RTT] Publishing RTT on /avp/rtt_ms (std_msgs/Float32)")
+
     def on_xr_reset():
         nonlocal probe_prim, line_prim, stylus_prim
         env.reset()
@@ -1162,6 +1193,18 @@ def main():
     _last_pc_update = 0.0
     _PC_UPDATE_INTERVAL = 0.05    # 20 Hz — matches /tf publish rate
 
+    # --- Rendered-bone pose recorder (enabled via --log-render-bones) ---
+    _render_log_dur   = float(args_cli.log_render_bones)
+    _render_log_rows: list = []
+    _render_log_start = None
+    _render_log_done  = False
+    _render_log_out_path = str(
+        pathlib.Path(__file__).resolve().parent / "rendered_bones.csv"
+    )
+    if _render_log_dur > 0:
+        print(f"[LOG-RENDER] Recording femur/tibia USD poses for "
+              f"{_render_log_dur:.1f}s → {_render_log_out_path}")
+
     _avp_femur_seen = False
     _avp_tibia_seen = False
 
@@ -1176,11 +1219,39 @@ def main():
         while simulation_app.is_running():
             step_count += 1
             now = time.time()
+
+            # Per-frame diagnostics for --log-render-bones. Reset each iteration;
+            # populated by the ROS bone-write blocks below.
+            _diag_flag_fem  = False
+            _diag_flag_tib  = False
+            _diag_wrote_fem = False
+            _diag_wrote_tib = False
+            _diag_wrote_fem_vec = [float("nan")] * 7
+            _diag_wrote_tib_vec = [float("nan")] * 7
+
+            # Per-TF probing: send a probe only when we actually write a bone
+            # TF (below, inside each write block). Here we just drain the
+            # rolling-10-ack stats the receiver thread has aggregated and
+            # publish them live.
+            if rtt_probe is not None and rtt_pub is not None:
+                _stats = rtt_probe.poll_batch_avg()
+                if _stats is not None:
+                    from std_msgs.msg import Float32 as _F32
+                    rtt_pub.publish(_F32(data=float(_stats["avg_ms"])))
+                    print(f"[RTT-AVG{_stats['n']}] "
+                          f"avg={_stats['avg_ms']:.1f}ms  "
+                          f"min={_stats['min_ms']:.1f}  max={_stats['max_ms']:.1f}  "
+                          f"jitter={_stats['jitter_ms']:.1f}  lost={_stats['lost']}  "
+                          f"size={_stats['payload_bytes']}B")
+
             if ros_node is not None and rclpy_mod is not None:
                 # Drain all pending callbacks (spin_once handles only one).
-                # Without this, high-frequency topics (point clouds) can starve
-                # lower-frequency ones (joint_states) on bag replay.
-                for _ in range(10):
+                # Bumped from 10→200 so /tf bursts (robot links + bones + etc.)
+                # drain completely each iteration instead of back-pressuring the
+                # new deep-queue /tf subscription (depth=500).  timeout_sec=0.0
+                # makes this cheap when the queue is empty — the loop exits on
+                # the first idle spin.
+                for _ in range(200):
                     rclpy_mod.spin_once(ros_node, timeout_sec=0.0)
                 ros_node.lookup_bone_tfs()
 
@@ -1196,25 +1267,18 @@ def main():
                             _avp_tibia_seen = True
                     _last_pc_update = now
 
-                # Apply bone origin transforms (6-DOF from /tracked/*_origin)
-                if ros_node.femur_origin_updated and ros_node.femur_origin_pos is not None:
-                    _bp = torch.zeros((env.num_envs, 7), device=env.device)
-                    _bp[0, :3] = torch.tensor(ros_node.femur_origin_pos, dtype=torch.float32, device=env.device)
-                    _bp[0, 3:] = torch.tensor(ros_node.femur_origin_quat, dtype=torch.float32, device=env.device)
-                    env.scene["robot"]  # just to verify scene is valid
-                    _fem_prim = stage.GetPrimAtPath("/World/envs/env_0/femur")
-                    if _fem_prim and _fem_prim.IsValid():
-                        from pxr import Gf as _Gf
-                        _q = ros_node.femur_origin_quat
-                        _p = ros_node.femur_origin_pos
-                        _rot = _Gf.Rotation(_Gf.Quaternion(float(_q[0]),
-                                _Gf.Vec3d(float(_q[1]), float(_q[2]), float(_q[3]))))
-                        _mat = _Gf.Matrix4d()
-                        _mat.SetRotateOnly(_rot)
-                        _mat.SetTranslateOnly(_Gf.Vec3d(float(_p[0]), float(_p[1]), float(_p[2])))
-                        UsdGeom.Xformable(_fem_prim).MakeMatrixXform().Set(_mat)
-                    ros_node.femur_origin_updated = False
+                # Capture flag state BEFORE the write consumes it (for CSV diagnostics).
+                _diag_flag_fem = bool(
+                    ros_node.femur_origin_updated and ros_node.femur_origin_pos is not None
+                )
+                _diag_flag_tib = bool(
+                    ros_node.tibia_origin_updated and ros_node.tibia_origin_pos is not None
+                )
 
+                # WRITE ORDER TEST (2026-04-22): tibia FIRST, femur SECOND.
+                # Tests whether intra-frame Fabric write-propagation ordering is the
+                # cause (first write may not flush to the AVP XformCache read in time).
+                # Revert by swapping these two blocks back (femur first, tibia second).
                 if ros_node.tibia_origin_updated and ros_node.tibia_origin_pos is not None:
                     _tib_prim = stage.GetPrimAtPath("/World/envs/env_0/tibia")
                     if _tib_prim and _tib_prim.IsValid():
@@ -1227,7 +1291,36 @@ def main():
                         _mat.SetRotateOnly(_rot)
                         _mat.SetTranslateOnly(_Gf.Vec3d(float(_p[0]), float(_p[1]), float(_p[2])))
                         UsdGeom.Xformable(_tib_prim).MakeMatrixXform().Set(_mat)
+                        _diag_wrote_tib = True
+                        _diag_wrote_tib_vec = [
+                            float(_p[0]), float(_p[1]), float(_p[2]),
+                            float(_q[0]), float(_q[1]), float(_q[2]), float(_q[3]),
+                        ]
+                        if rtt_probe is not None:
+                            rtt_probe.send_probe()
                     ros_node.tibia_origin_updated = False
+
+                # Apply bone origin transforms (6-DOF from /tracked/*_origin)
+                if ros_node.femur_origin_updated and ros_node.femur_origin_pos is not None:
+                    _fem_prim = stage.GetPrimAtPath("/World/envs/env_0/femur")
+                    if _fem_prim and _fem_prim.IsValid():
+                        from pxr import Gf as _Gf
+                        _q = ros_node.femur_origin_quat
+                        _p = ros_node.femur_origin_pos
+                        _rot = _Gf.Rotation(_Gf.Quaternion(float(_q[0]),
+                                _Gf.Vec3d(float(_q[1]), float(_q[2]), float(_q[3]))))
+                        _mat = _Gf.Matrix4d()
+                        _mat.SetRotateOnly(_rot)
+                        _mat.SetTranslateOnly(_Gf.Vec3d(float(_p[0]), float(_p[1]), float(_p[2])))
+                        UsdGeom.Xformable(_fem_prim).MakeMatrixXform().Set(_mat)
+                        _diag_wrote_fem = True
+                        _diag_wrote_fem_vec = [
+                            float(_p[0]), float(_p[1]), float(_p[2]),
+                            float(_q[0]), float(_q[1]), float(_q[2]), float(_q[3]),
+                        ]
+                        if rtt_probe is not None:
+                            rtt_probe.send_probe()
+                    ros_node.femur_origin_updated = False
 
                 # Force arm to track ROS joint positions every frame (teleport).
                 # This bypasses PD transient / joint-limit stickiness / collision
@@ -1241,6 +1334,68 @@ def main():
                         if "inference" not in str(e).lower():
                             raise
                     ros_node.robot_state_updated = False
+
+            # --- Rendered-bone recorder tick ---
+            if _render_log_dur > 0 and not _render_log_done:
+                _now_rec = time.time()
+                if _render_log_start is None:
+                    _render_log_start = _now_rec
+                _elapsed = _now_rec - _render_log_start
+                if _elapsed < _render_log_dur:
+                    _xf_cache_rec = UsdGeom.XformCache()
+                    _row = [_elapsed]
+                    for _bp_path in ("/World/envs/env_0/femur", "/World/envs/env_0/tibia"):
+                        _pp = stage.GetPrimAtPath(_bp_path)
+                        if _pp and _pp.IsValid():
+                            _m  = _xf_cache_rec.GetLocalToWorldTransform(_pp)
+                            _t  = _m.ExtractTranslation()
+                            _q  = _m.ExtractRotationQuat()
+                            _iq = _q.GetImaginary()
+                            _row += [float(_t[0]), float(_t[1]), float(_t[2]),
+                                     float(_q.GetReal()),
+                                     float(_iq[0]), float(_iq[1]), float(_iq[2])]
+                        else:
+                            _row += [float("nan")] * 7
+                    # Append per-frame diagnostic counters: flag state before
+                    # write, whether Set() executed, and the pose that was
+                    # written (NaN if not written this frame).
+                    _row += [
+                        int(_diag_flag_fem), int(_diag_flag_tib),
+                        int(_diag_wrote_fem), int(_diag_wrote_tib),
+                    ]
+                    _row += _diag_wrote_fem_vec
+                    _row += _diag_wrote_tib_vec
+                    _render_log_rows.append(_row)
+                else:
+                    try:
+                        import csv as _csv
+                        with open(_render_log_out_path, "w", newline="") as _fh:
+                            _w = _csv.writer(_fh)
+                            _w.writerow([
+                                "t",
+                                "fx", "fy", "fz", "fqw", "fqx", "fqy", "fqz",
+                                "tx", "ty", "tz", "tqw", "tqx", "tqy", "tqz",
+                                "flag_fem", "flag_tib",
+                                "wrote_fem", "wrote_tib",
+                                "wrote_fem_x", "wrote_fem_y", "wrote_fem_z",
+                                "wrote_fem_qw", "wrote_fem_qx", "wrote_fem_qy", "wrote_fem_qz",
+                                "wrote_tib_x", "wrote_tib_y", "wrote_tib_z",
+                                "wrote_tib_qw", "wrote_tib_qx", "wrote_tib_qy", "wrote_tib_qz",
+                            ])
+                            _w.writerows(_render_log_rows)
+                        _n_rows = len(_render_log_rows)
+                        _fem_flag_frames   = sum(1 for r in _render_log_rows if r[15])
+                        _tib_flag_frames   = sum(1 for r in _render_log_rows if r[16])
+                        _fem_write_frames  = sum(1 for r in _render_log_rows if r[17])
+                        _tib_write_frames  = sum(1 for r in _render_log_rows if r[18])
+                        print(f"[LOG-RENDER] Wrote {_n_rows} rows → {_render_log_out_path}")
+                        print(f"[LOG-RENDER] femur flag frames: {_fem_flag_frames}/{_n_rows}  "
+                              f"femur write frames: {_fem_write_frames}/{_n_rows}")
+                        print(f"[LOG-RENDER] tibia flag frames: {_tib_flag_frames}/{_n_rows}  "
+                              f"tibia write frames: {_tib_write_frames}/{_n_rows}")
+                    except Exception as _e:
+                        print(f"[LOG-RENDER] CSV write failed: {_e}")
+                    _render_log_done = True
 
             if teleop_interface is not None:
                 delta_pose = teleop_interface.advance()
@@ -1745,8 +1900,8 @@ def main():
                         print("[INFO] Simulation step stopped. Exiting teleop loop.")
                         break
 
-                # ── Stream pose updates to Vision Pro AR (throttled to 60 Hz) ──
-                if avp_streamer is not None and step_count % 2 == 0:
+                # ── Stream pose updates to Vision Pro AR (every frame) ──
+                if avp_streamer is not None:
                     try:
                         avp_streamer.update_sim()
                         # Inject non-physics prims (Probe, GuideLine, PointClouds)
@@ -1805,6 +1960,8 @@ def main():
 
     finally:
         env.close()
+        if rtt_probe is not None:
+            rtt_probe.close()
         if avp_streamer is not None:
             try:
                 avp_streamer.cleanup()

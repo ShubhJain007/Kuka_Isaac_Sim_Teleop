@@ -25,6 +25,18 @@ sensor_qos = QoSProfile(
       reliability=ReliabilityPolicy.BEST_EFFORT,
   )
 
+# Dedicated deep-queue QoS for /tf.  /tf carries ALL tf frames on the system
+# (robot links, cameras, bones, …), not just the two we care about.  With
+# depth=1, every new /tf message overwrites the previous one before spin_once
+# can drain it, so bone frames that happen to sit in the queue behind other
+# frames get silently dropped.  Deep queue fixes the asymmetry we saw
+# (femur 30 vs tibia 77 flag-True frames over 15 s while TF itself was 20 Hz).
+tf_qos = QoSProfile(
+      depth=500,
+      history=HistoryPolicy.KEEP_LAST,
+      reliability=ReliabilityPolicy.BEST_EFFORT,
+  )
+
 
 
 # ── Manual PointCloud2 parser (no sensor_msgs_py dependency) ─────────────
@@ -139,7 +151,9 @@ def make_ros_integration_node(device: torch.device):
             # tf2's internal buffer retains old data and rejects replayed
             # (older-timestamped) transforms on bag restart, causing bones
             # to freeze forever.  Raw subscription has no such issue.
-            self.create_subscription(_TFMessage, "/tf", self._raw_tf_callback, sensor_qos)
+            # Uses the deep-queue tf_qos (depth=500) so bone TFs aren't
+            # dropped behind higher-frequency frames on the same topic.
+            self.create_subscription(_TFMessage, "/tf", self._raw_tf_callback, tf_qos)
             self._tf_child_femur = "tracked/femur_origin"
             self._tf_child_tibia = "tracked/tibia_origin"
 
@@ -353,30 +367,41 @@ def make_ros_integration_node(device: torch.device):
                     w1*z2 + x1*y2 - y1*x2 + z1*w2,
                 ])
 
+        # --- Per-bone EKF tuning --------------------------------------
+        # Femur origin sits ON the mesh, so any lag is highly visible.
+        # We trade a bit more high-frequency noise passthrough for a
+        # faster-converging velocity estimate (less trailing on direction
+        # changes). Tibia keeps the conservative defaults.
+        _EKF_PARAMS_FEMUR = dict(
+            process_noise_pos=1.0,    # was 0.3 — position snaps to measurements fast
+            process_noise_vel=2.0,    # was 10.0 — velocity heavily damped → no overshoot
+            meas_noise_pos=0.00005,   # was 0.0003 — very high measurement trust
+            process_noise_quat=1.2,   # was 0.5 — rotation snaps to measurements
+            meas_noise_quat=0.001,    # was 0.003 — trust TF orientation
+        )
+        _EKF_PARAMS_TIBIA = dict()    # defaults
+
         def _init_ekfs(self):
-            """Lazily create EKF instances for each bone."""
+            """Lazily create EKF instances for each bone with per-bone tuning."""
             if not hasattr(self, "_ekf_femur"):
-                self._ekf_femur = self._BoneEKF()
-                self._ekf_tibia = self._BoneEKF()
+                self._ekf_femur = self._BoneEKF(**self._EKF_PARAMS_FEMUR)
+                self._ekf_tibia = self._BoneEKF(**self._EKF_PARAMS_TIBIA)
                 self._ekf_last_predict = None
 
         def _raw_tf_callback(self, msg: _TFMessage):
-            """Direct /tf subscription — feeds measurements into EKF.
+            """Direct /tf subscription — raw pass-through for both bones.
 
-            Every incoming TF message is accepted unconditionally, which means
-            bag restarts work without any special detection or buffer flushing.
+            EKF is fully bypassed; the measurement goes straight to the
+            public femur_/tibia_origin fields consumed by the teleop script.
             """
             import time as _wtime
             now_wall = _wtime.time()
-            self._init_ekfs()
 
             for tf_stamped in msg.transforms:
                 child = tf_stamped.child_frame_id
                 if child == self._tf_child_femur:
-                    ekf = self._ekf_femur
                     bone = "femur"
                 elif child == self._tf_child_tibia:
-                    ekf = self._ekf_tibia
                     bone = "tibia"
                 else:
                     continue
@@ -386,77 +411,38 @@ def make_ros_integration_node(device: torch.device):
                 meas_pos  = np.array([t.x, t.y, t.z], dtype=np.float64)
                 meas_quat = np.array([r.w, r.x, r.y, r.z], dtype=np.float64)
 
-                # Detect bag restart: large position jump → reinitialize
-                if ekf.initialized:
-                    jump = float(np.linalg.norm(meas_pos - ekf.x[:3]))
-                    if jump > 0.5:  # 50 cm jump = bag restarted
-                        ekf.initialized = False
-                        print(f"[EKF] {bone} position jumped {jump:.2f}m — reinitializing")
+                if bone == "femur":
+                    self.femur_origin_pos     = meas_pos
+                    self.femur_origin_quat    = meas_quat
+                    self.femur_origin_updated = True
+                else:
+                    self.tibia_origin_pos     = meas_pos
+                    self.tibia_origin_quat    = meas_quat
+                    self.tibia_origin_updated = True
 
-                ekf.update(meas_pos, meas_quat, now_wall)
+                gap_attr = f"_{bone}_last_tf_time"
+                _prev = getattr(self, gap_attr, 0.0)
+                _gap = (now_wall - _prev) * 1000 if _prev > 0 else 0.0
+                setattr(self, gap_attr, now_wall)
 
                 cnt_attr = f"_{bone}_origin_count"
                 cnt = getattr(self, cnt_attr, 0) + 1
                 setattr(self, cnt_attr, cnt)
-                if cnt <= 3 or cnt % 200 == 0:
-                    print(f"[EKF/TF] {bone} meas #{cnt}: "
-                          f"pos=({meas_pos[0]:.3f},{meas_pos[1]:.3f},{meas_pos[2]:.3f})")
+                if cnt <= 3 or cnt % 50 == 0:
+                    print(f"[TF-DIAG] {bone} #{cnt}: gap={_gap:.1f}ms "
+                          f"meas=({meas_pos[0]:.4f},{meas_pos[1]:.4f},{meas_pos[2]:.4f})")
 
         def lookup_bone_tfs(self):
-            """Predict EKF state forward to current wall time.
-
-            Called from the main sim loop at ~60-120 Hz.  Between TF
-            measurements (~20 Hz), the EKF's constant-velocity model
-            and angular-velocity predictor fill in the gaps, producing
-            smooth 30+ Hz output.
-            """
-            import time as _wtime
-            self._init_ekfs()
-
-            now_wall = _wtime.time()
-            last_pred = self._ekf_last_predict or now_wall
-            dt = now_wall - last_pred
-            self._ekf_last_predict = now_wall
-
-            for bone, ekf in [("femur", self._ekf_femur), ("tibia", self._ekf_tibia)]:
-                if not ekf.initialized:
-                    continue
-
-                ekf.predict(dt)
-                pos, quat = ekf.get_state()
-
-                if bone == "femur":
-                    self.femur_origin_pos     = pos
-                    self.femur_origin_quat    = quat
-                    self.femur_origin_updated = True
-                else:
-                    self.tibia_origin_pos     = pos
-                    self.tibia_origin_quat    = quat
-                    self.tibia_origin_updated = True
+            """No-op — both bones are written directly by the TF callback."""
+            pass
 
         def femur_origin_callback(self, msg):
-            self._femur_origin_count += 1
-            p = msg.pose.position
-            q = msg.pose.orientation
-            self.femur_origin_pos = np.array([p.x, p.y, p.z], dtype=np.float64)
-            self.femur_origin_quat = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)
-            self.femur_origin_updated = True
-            if self._femur_origin_count <= 3 or self._femur_origin_count % 200 == 0:
-                print(f"[ROS] /tracked/femur_origin #{self._femur_origin_count}: "
-                      f"pos=({p.x:.3f}, {p.y:.3f}, {p.z:.3f}) "
-                      f"quat=({q.w:.3f}, {q.x:.3f}, {q.y:.3f}, {q.z:.3f})")
+            # Disabled — /tf callback handles femur pose to avoid race condition
+            pass
 
         def tibia_origin_callback(self, msg):
-            self._tibia_origin_count += 1
-            p = msg.pose.position
-            q = msg.pose.orientation
-            self.tibia_origin_pos = np.array([p.x, p.y, p.z], dtype=np.float64)
-            self.tibia_origin_quat = np.array([q.w, q.x, q.y, q.z], dtype=np.float64)
-            self.tibia_origin_updated = True
-            if self._tibia_origin_count <= 3 or self._tibia_origin_count % 200 == 0:
-                print(f"[ROS] /tracked/tibia_origin #{self._tibia_origin_count}: "
-                      f"pos=({p.x:.3f}, {p.y:.3f}, {p.z:.3f}) "
-                      f"quat=({q.w:.3f}, {q.x:.3f}, {q.y:.3f}, {q.z:.3f})")
+            # Disabled — /tf callback handles tibia pose to avoid race condition
+            pass
 
         def robot_desc_callback(self, msg: String):
             self.robot_description = msg.data
